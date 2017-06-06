@@ -42,7 +42,7 @@ const html = `<!DOCTYPE html>
 		</style>
 	</head>
 	<body>
-		<h1>RDSS !Archivematica Msgcreator</h1>
+		<h1>RDSS Archivematica Msgcreator</h1>
 		<p>Send a message to Kinesis. You can expect the message to be consumed by the RDSS Archivematica Channel Adapter.</p>
 		{{if .Result}}
 			<div class="result">
