@@ -2,20 +2,49 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/tls"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"html/template"
 	"log"
 	"net/http"
+	"regexp"
 	"strconv"
 	"time"
+
+	"strings"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/credentials"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/kinesis"
+	"github.com/aws/aws-sdk-go/service/s3"
 )
+
+type Message struct {
+	Header Header `json:"messageHeaders"`
+	Body   Body   `json:"messageBody"`
+}
+
+type Header struct {
+	ID    string `json:"messageId"`
+	Type  string `json:"messageType"`
+	Class string `json:"messageClass"`
+}
+
+type Body struct {
+	UUID  string  `json:"datasetUuid"`
+	Title string  `json:"datasetTitle"`
+	Files []*File `json:"files"`
+}
+
+type File struct {
+	ID    string `json:"id",omitempty`
+	Path  string `json:"path"`
+	Title string `json:"title,omitempty"`
+}
 
 const html = `<!DOCTYPE html>
 <html>
@@ -42,8 +71,10 @@ const html = `<!DOCTYPE html>
 		</style>
 	</head>
 	<body>
-		<h1>RDSS Archivematica Msgcreator</h1>
-		<p>Send a message to Kinesis. You can expect the message to be consumed by the RDSS Archivematica Channel Adapter.</p>
+		<h1><a href="/">RDSS Archivematica Msgcreator</a></h1>
+		<h3>Send a message to Kinesis</h3>
+		<p>You can expect the message to be consumed by the RDSS Archivematica Channel Adapter.</p>
+		<p>The sample <code>MetadataCreate</code> shown by us contains a couple of files that we know exist in the <code>{{.Bucket}}</code> sample bucket. You can choose a different bucket passing it in the URL, e.g. <a href="/with-files/{{.Bucket}}">/with-files/{{.Bucket}}</a>. The first 500 matches will be listed and included in the <code>files</code> list. You can add an extra prefix to filter the results, e.g.: <a href="/with-files/{{.Bucket}}/woodpigeon">/with-files/{{.Bucket}}/woodpigeon</a>.</p>
 		{{if .Result}}
 			<div class="result">
 				{{.Result}}
@@ -59,57 +90,100 @@ const html = `<!DOCTYPE html>
 </html>
 `
 
-const defaultMessage = `{
-  "messageHeader": {
-    "messageId": "9e8f3cfc-29c2-11e7-93ae-92361f002671",
-    "messageType": "MetadataCreate",
-    "messageClass": "Command"
-  },
-  "messageBody": {
-    "datasetUuid": "a7e83002-29c1-11e7-93ae-92361f002671",
-    "datasetTitle": "Research about birds in the UK.",
-    "files": [
-      {
-        "id": "ec2d4928-29c1-11e7-93ae-92361f002671",
-        "path": "s3://rdss-prod-figshare-0132/bird-sounds.mp3"
-      },
-      {
-        "id": "0dc88052-29c2-11e7-93ae-92361f002671",
-        "path": "s3://rdss-prod-figshare-0132/woodpigeon-pic.jpg"
-      }
-    ]
-  }
-}`
-
 type Page struct {
 	DefaultMessage string
-
+	Bucket         string
 	Result         string
 	ShardID        string
 	SequenceNumber string
 }
 
-var tmpl = template.Must(template.New("index").Parse(html))
+var (
+	tmpl = template.Must(template.New("index").Parse(html))
+	re   = regexp.MustCompile("^/with-files/(.*)")
+)
 
 func handler(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path != "/" {
+	log.Printf("Request received: method=%s path=%s", r.Method, r.URL)
+
+	values := re.FindStringSubmatch(r.URL.Path)
+	withFiles := len(values) > 1
+
+	if r.URL.Path != "/" && !withFiles {
 		http.Error(w, "", http.StatusNotFound)
 		return
 	}
 
-	log.Printf("Request received: method=%s path=%s", r.Method, r.URL)
-
 	if r.Method == http.MethodPost {
 		submitForm(w, r)
-	} else if r.Method == http.MethodGet {
-		getForm(w, r)
-	} else {
-		http.Error(w, "I don't know what you're trying to do!", http.StatusNotFound)
+		return
 	}
+
+	if r.Method == http.MethodGet {
+		if withFiles {
+			renderFormWithFiles(w, r, values[1])
+		} else {
+			renderFormWithFiles(w, r, *s3DefaultBucket)
+		}
+		return
+	}
+
+	http.Error(w, "I don't know what you're trying to do!", http.StatusNotFound)
+}
+
+func renderFormWithFiles(w http.ResponseWriter, r *http.Request, query string) {
+	parts := strings.Split(query, "/")
+
+	var bucket, keyPrefix string
+	if n := len(parts); n < 1 {
+		http.Error(w, "", http.StatusNotFound)
+		return
+	} else if n == 1 {
+		bucket = parts[0]
+	} else if n > 1 {
+		bucket = parts[0]
+		keyPrefix = strings.Join(parts[1:], "/")
+	}
+
+	log.Printf("Accessing to S3, bucket=%s prefix=%s", bucket, keyPrefix)
+	req := &s3.ListObjectsV2Input{
+		Bucket:  aws.String(bucket),
+		MaxKeys: aws.Int64(500),
+		Prefix:  aws.String(keyPrefix),
+	}
+	resp, err := s3Client.ListObjectsV2(req)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Error in S3 client: %s", err), http.StatusInternalServerError)
+		return
+	}
+
+	message := &Message{
+		Header: Header{
+			ID:    uuid(),
+			Class: "Command",
+			Type:  "MetadataCreate",
+		},
+		Body: Body{
+			Title: "Research about birds in the UK.",
+			UUID:  uuid(),
+		},
+	}
+	for _, object := range resp.Contents {
+		message.Body.Files = append(message.Body.Files, &File{
+			ID:   uuid(),
+			Path: fmt.Sprintf("s3://%s/%s", bucket, *object.Key),
+		})
+	}
+	msg, err := json.MarshalIndent(message, "", "  ")
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Error encoding JSON: %s", err), http.StatusInternalServerError)
+		return
+	}
+	renderForm(w, r, string(msg))
 }
 
 func submitForm(w http.ResponseWriter, r *http.Request) {
-	p := &Page{}
+	p := &Page{Bucket: *s3DefaultBucket}
 	if err := r.ParseForm(); err != nil {
 		p.Result = fmt.Sprintf("The form could not be parsed: %s", err)
 		renderTemplate(w, p)
@@ -140,9 +214,10 @@ func submitForm(w http.ResponseWriter, r *http.Request) {
 	renderTemplate(w, p)
 }
 
-func getForm(w http.ResponseWriter, r *http.Request) {
+func renderForm(w http.ResponseWriter, r *http.Request, message string) {
 	p := &Page{
-		DefaultMessage: defaultMessage,
+		DefaultMessage: message,
+		Bucket:         *s3DefaultBucket,
 	}
 
 	renderTemplate(w, p)
@@ -177,30 +252,82 @@ func sendMessage(ctx context.Context, msg string) (string, string, error) {
 }
 
 var (
-	kinesisClient *kinesis.Kinesis
-	kinesisStream *string
+	kinesisClient   *kinesis.Kinesis
+	kinesisStream   *string
+	s3Client        *s3.S3
+	s3DefaultBucket *string
 )
 
 func main() {
-	addr := flag.String("addr", "0.0.0.0:8000", "listen address")
-	kinesisRegion := flag.String("kinesis-region", "", "Kinesis - AWS Region")
-	kinesisEndpoint := flag.String("kinesis-endpoint", "", "Kinesis - Endpoint")
+	var (
+		addr            = flag.String("addr", "0.0.0.0:8000", "listen address")
+		kinesisRegion   = flag.String("kinesis-region", "", "Kinesis - Region")
+		kinesisEndpoint = flag.String("kinesis-endpoint", "", "Kinesis - Endpoint")
+		s3AccessKey     = flag.String("s3-access-key", "", "S3 - Access key")
+		s3SecretKey     = flag.String("s3-secret-key", "", "S3 - Secret key")
+		s3Region        = flag.String("s3-region", "", "S3 - Region")
+		s3Endpoint      = flag.String("s3-endpoint", "", "S3 - Endpoint")
+	)
 	kinesisStream = flag.String("kinesis-stream", "main", "Kinesis - Stream")
+	s3DefaultBucket = flag.String("s3-default-bucket", "rdss-prod-figshare-0132", "S3 - default bucket")
 	flag.Parse()
 
+	kinesisClient = getKinesisClient(kinesisRegion, kinesisEndpoint)
+	s3Client = getS3Client(s3AccessKey, s3SecretKey, s3Region, s3Endpoint)
+
+	log.Printf("HTTP server listening on http://%s", *addr)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", handler)
+	http.ListenAndServe(*addr, mux)
+}
+
+func getKinesisClient(region, endpoint *string) *kinesis.Kinesis {
 	config := aws.NewConfig()
 	config.CredentialsChainVerboseErrors = aws.Bool(true)
 	config.Credentials = credentials.NewStaticCredentials("foo", "bar", "")
-	if *kinesisRegion != "" {
-		config.Region = kinesisRegion
-	}
-	if *kinesisEndpoint != "" {
-		config.Endpoint = kinesisEndpoint
-	}
-	sess := session.Must(session.NewSession(config))
-	kinesisClient = kinesis.New(sess)
 
-	log.Printf("HTTP server listening on http://%s", *addr)
-	http.HandleFunc("/", handler)
-	http.ListenAndServe(*addr, nil)
+	if *region != "" {
+		config.Region = region
+	}
+	if *endpoint != "" {
+		config.Endpoint = endpoint
+	}
+
+	sess := session.Must(session.NewSession(config))
+	return kinesis.New(sess)
+}
+
+func getS3Client(accessKey, secretKey, region, endpoint *string) *s3.S3 {
+	config := aws.NewConfig()
+	config.CredentialsChainVerboseErrors = aws.Bool(true)
+	config.Credentials = credentials.NewStaticCredentials(*accessKey, *secretKey, "")
+
+	// Looking at minio...
+	config.S3ForcePathStyle = aws.Bool(true)
+	config.HTTPClient = &http.Client{
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		},
+	}
+
+	if *region != "" {
+		config.Region = region
+	}
+	if *endpoint != "" {
+		config.Endpoint = endpoint
+	}
+
+	sess := session.Must(session.NewSession(config))
+
+	return s3.New(sess)
+}
+
+func uuid() (uuid string) {
+	b := make([]byte, 16)
+	_, err := rand.Read(b)
+	if err != nil {
+		fmt.Println("Error: ", err)
+		return
+	}
+	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:])
 }
