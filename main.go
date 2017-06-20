@@ -174,7 +174,7 @@ func renderFormWithFiles(w http.ResponseWriter, r *http.Request, query string) {
 			ID:          uuid(),
 			Path:        fmt.Sprintf("s3://%s/%s", bucket, *object.Key),
 			StorageType: "s3",
-			Title:       fmt.Sprintf("Label of this intellecutal asset: %d", index),
+			Title:       fmt.Sprintf("Label of this intellectual asset: %d", index+1),
 		})
 	}
 	msg, err := json.MarshalIndent(message, "", "  ")
