@@ -35,15 +35,16 @@ type Header struct {
 }
 
 type Body struct {
-	UUID  string  `json:"datasetUuid"`
-	Title string  `json:"datasetTitle"`
-	Files []*File `json:"files"`
+	UUID  string  `json:"objectUuid"`
+	Title string  `json:"objectTitle"`
+	Files []*File `json:"objectFile"`
 }
 
 type File struct {
-	ID    string `json:"id",omitempty`
-	Path  string `json:"path"`
-	Title string `json:"title,omitempty"`
+	ID          string `json:"fileUuid"`
+	Path        string `json:"fileStorageLocation"`
+	StorageType string `json:"fileStorageType"`
+	Title       string `json:"fileLabel"`
 }
 
 const html = `<!DOCTYPE html>
@@ -168,10 +169,12 @@ func renderFormWithFiles(w http.ResponseWriter, r *http.Request, query string) {
 			UUID:  uuid(),
 		},
 	}
-	for _, object := range resp.Contents {
+	for index, object := range resp.Contents {
 		message.Body.Files = append(message.Body.Files, &File{
-			ID:   uuid(),
-			Path: fmt.Sprintf("s3://%s/%s", bucket, *object.Key),
+			ID:          uuid(),
+			Path:        fmt.Sprintf("s3://%s/%s", bucket, *object.Key),
+			StorageType: "s3",
+			Title:       fmt.Sprintf("Label of this intellecutal asset: %d", index),
 		})
 	}
 	msg, err := json.MarshalIndent(message, "", "  ")
