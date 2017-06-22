@@ -12,9 +12,8 @@ import (
 	"net/http"
 	"regexp"
 	"strconv"
-	"time"
-
 	"strings"
+	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/credentials"
