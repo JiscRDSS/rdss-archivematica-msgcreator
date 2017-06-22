@@ -72,10 +72,10 @@ const html = `<!DOCTYPE html>
 		</style>
 	</head>
 	<body>
-		<h1><a href="/">RDSS Archivematica Msgcreator</a></h1>
+		<h1><a href="{{.Prefix}}">RDSS Archivematica Msgcreator</a></h1>
 		<h3>Send a message to Kinesis</h3>
 		<p>You can expect the message to be consumed by the RDSS Archivematica Channel Adapter.</p>
-		<p>The sample <code>MetadataCreate</code> shown by us contains a couple of files that we know exist in the <code>{{.Bucket}}</code> sample bucket. You can choose a different bucket passing it in the URL, e.g. <a href="/with-files/{{.Bucket}}">/with-files/{{.Bucket}}</a>. The first 500 matches will be listed and included in the <code>files</code> list. You can add an extra prefix to filter the results, e.g.: <a href="/with-files/{{.Bucket}}/woodpigeon">/with-files/{{.Bucket}}/woodpigeon</a>.</p>
+		<p>The sample <code>MetadataCreate</code> shown by us contains a couple of files that we know exist in the <code>{{.Bucket}}</code> sample bucket. You can choose a different bucket passing it in the URL, e.g. <a href="{{.Prefix}}with-files/{{.Bucket}}">/with-files/{{.Bucket}}</a>. The first 500 matches will be listed and included in the <code>files</code> list. You can add an extra prefix to filter the results, e.g.: <a href="{{.Prefix}}with-files/{{.Bucket}}/woodpigeon">/with-files/{{.Bucket}}/woodpigeon</a>.</p>
 		{{if .Result}}
 			<div class="result">
 				{{.Result}}
@@ -85,13 +85,14 @@ const html = `<!DOCTYPE html>
 		{{end}}
 		<form method="POST">
 			<textarea name="message">{{.DefaultMessage}}</textarea>
-			<button type="submit" class="button" href="#">Send</a>
+			<button type="submit" class="button">Send</a>
 		</form>
 	</body>
 </html>
 `
 
 type Page struct {
+	Prefix         string
 	DefaultMessage string
 	Bucket         string
 	Result         string
@@ -186,7 +187,7 @@ func renderFormWithFiles(w http.ResponseWriter, r *http.Request, query string) {
 }
 
 func submitForm(w http.ResponseWriter, r *http.Request) {
-	p := &Page{Bucket: *s3DefaultBucket}
+	p := &Page{Prefix: *prefix, Bucket: *s3DefaultBucket}
 	if err := r.ParseForm(); err != nil {
 		p.Result = fmt.Sprintf("The form could not be parsed: %s", err)
 		renderTemplate(w, p)
@@ -219,6 +220,7 @@ func submitForm(w http.ResponseWriter, r *http.Request) {
 
 func renderForm(w http.ResponseWriter, r *http.Request, message string) {
 	p := &Page{
+		Prefix:         *prefix,
 		DefaultMessage: message,
 		Bucket:         *s3DefaultBucket,
 	}
@@ -259,6 +261,7 @@ var (
 	kinesisStream   *string
 	s3Client        *s3.S3
 	s3DefaultBucket *string
+	prefix          *string
 )
 
 func main() {
@@ -271,9 +274,14 @@ func main() {
 		s3Region        = flag.String("s3-region", "", "S3 - Region")
 		s3Endpoint      = flag.String("s3-endpoint", "", "S3 - Endpoint")
 	)
+	prefix = flag.String("prefix", "/", "Path prefix, e.g.: `/msgcreator`, similar to `--prefix` in Jenkins")
 	kinesisStream = flag.String("kinesis-stream", "main", "Kinesis - Stream")
 	s3DefaultBucket = flag.String("s3-default-bucket", "rdss-prod-figshare-0132", "S3 - default bucket")
 	flag.Parse()
+
+	if !strings.HasSuffix(*prefix, "/") {
+		*prefix += "/"
+	}
 
 	kinesisClient = getKinesisClient(kinesisRegion, kinesisEndpoint)
 	s3Client = getS3Client(s3AccessKey, s3SecretKey, s3Region, s3Endpoint)
