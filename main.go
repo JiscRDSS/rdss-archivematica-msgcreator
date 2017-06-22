@@ -24,7 +24,7 @@ import (
 )
 
 type Message struct {
-	Header Header `json:"messageHeaders"`
+	Header Header `json:"messageHeader"`
 	Body   Body   `json:"messageBody"`
 }
 
@@ -44,7 +44,7 @@ type File struct {
 	ID          string `json:"fileUuid"`
 	Path        string `json:"fileStorageLocation"`
 	StorageType string `json:"fileStorageType"`
-	Title       string `json:"fileLabel"`
+	Title       string `json:"fileName"`
 }
 
 const html = `<!DOCTYPE html>
