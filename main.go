@@ -42,7 +42,7 @@ type Body struct {
 type File struct {
 	ID          string `json:"fileUuid"`
 	Path        string `json:"fileStorageLocation"`
-	StorageType string `json:"fileStorageType"`
+	StorageType int    `json:"fileStorageType"`
 	Title       string `json:"fileName"`
 }
 
@@ -173,16 +173,20 @@ func renderFormWithFiles(w http.ResponseWriter, r *http.Request, query string) {
 		message.Body.Files = append(message.Body.Files, &File{
 			ID:          uuid(),
 			Path:        fmt.Sprintf("s3://%s/%s", bucket, *object.Key),
-			StorageType: "s3",
+			StorageType: 1,
 			Title:       fmt.Sprintf("Label of this intellectual asset: %d", index+1),
 		})
 	}
-	msg, err := json.MarshalIndent(message, "", "  ")
+	msg, err := encodeMessage(message)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("Error encoding JSON: %s", err), http.StatusInternalServerError)
 		return
 	}
 	renderForm(w, r, string(msg))
+}
+
+func encodeMessage(msg *Message) ([]byte, error) {
+	return json.MarshalIndent(msg, "", "  ")
 }
 
 func submitForm(w http.ResponseWriter, r *http.Request) {
