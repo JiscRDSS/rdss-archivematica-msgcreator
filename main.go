@@ -169,12 +169,12 @@ func renderFormWithFiles(w http.ResponseWriter, r *http.Request, query string) {
 			UUID:  uuid(),
 		},
 	}
-	for index, object := range resp.Contents {
+	for _, object := range resp.Contents {
 		message.Body.Files = append(message.Body.Files, &File{
 			ID:          uuid(),
 			Path:        fmt.Sprintf("s3://%s/%s", bucket, *object.Key),
 			StorageType: 1,
-			Title:       fmt.Sprintf("Label of this intellectual asset: %d", index+1),
+			Title:       *object.Key,
 		})
 	}
 	msg, err := encodeMessage(message)
