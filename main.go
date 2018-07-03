@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"crypto/rand"
 	"crypto/tls"
 	"encoding/json"
 	"flag"
@@ -20,31 +19,9 @@ import (
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/kinesis"
 	"github.com/aws/aws-sdk-go/service/s3"
+
+	"github.com/JiscRDSS/rdss-archivematica-channel-adapter/broker/message"
 )
-
-type Message struct {
-	Header Header `json:"messageHeader"`
-	Body   Body   `json:"messageBody"`
-}
-
-type Header struct {
-	ID    string `json:"messageId"`
-	Type  string `json:"messageType"`
-	Class string `json:"messageClass"`
-}
-
-type Body struct {
-	UUID  string  `json:"objectUuid"`
-	Title string  `json:"objectTitle"`
-	Files []*File `json:"objectFile"`
-}
-
-type File struct {
-	ID          string `json:"fileUuid"`
-	Path        string `json:"fileStorageLocation"`
-	StorageType int    `json:"fileStorageType"`
-	Title       string `json:"fileName"`
-}
 
 const html = `<!DOCTYPE html>
 <html>
@@ -68,35 +45,56 @@ const html = `<!DOCTYPE html>
 				padding: 8px;
 				margin-bottom: 10px;
 			}
+			.error {
+				background-color: #eee;
+				border: 2px solid red;
+				padding: 8px;
+				margin-bottom: 10px;
+			}
 		</style>
 	</head>
 	<body>
 		<h1><a href="{{.Prefix}}">RDSS Archivematica Msgcreator</a></h1>
-		<h3>Send a message to Kinesis</h3>
-		<p>You can expect the message to be consumed by the RDSS Archivematica Channel Adapter.</p>
-		<p>The sample <code>MetadataCreate</code> shown by us contains a couple of files that we know exist in the <code>{{.Bucket}}</code> sample bucket. You can choose a different bucket passing it in the URL, e.g. <a href="{{.Prefix}}with-files/{{.Bucket}}">/with-files/{{.Bucket}}</a>. The first 500 matches will be listed and included in the <code>files</code> list. You can add an extra prefix to filter the results, e.g.: <a href="{{.Prefix}}with-files/{{.Bucket}}/woodpigeon">/with-files/{{.Bucket}}/woodpigeon</a>.</p>
-		{{if .Result}}
-			<div class="result">
-				{{.Result}}
-				{{if .ShardID}}<br />ShardId: {{.ShardID}}{{end}}
-				{{if .SequenceNumber}}<br />SequenceNumber: {{.SequenceNumber}}{{end}}
-			</div>
+		{{if .Post}}
+			<h3>We're trying to send your message...</h3>
+			{{if .Result}}
+				<div class="result">
+					{{.Result}}
+					{{if .ShardID}}<br />ShardId: {{.ShardID}}{{end}}
+					{{if .SequenceNumber}}<br />SequenceNumber: {{.SequenceNumber}}{{end}}
+				</div>
+			{{end}}
+			<hr />
+			<a href="/">Send a new message</a>
+		{{else}}
+			<h3>Compose a message and send it to Kinesis.</h3>
+			{{if .S3Available}}
+				<p>The document below is a <code>MetadataCreate</code> message populated with files found in the <code>{{.Bucket}}</code> sample bucket. Only up to {{.MaxKeys}} files are being listed. Checksums are only calculated if you include the command-line argument <code>-checksums</code>.</p>
+				<p>You can choose a different bucket passing it in the URL, e.g. <code>/with-files/{{.Bucket}}</code>. You can add an extra prefix to filter the results, e.g.: <code>/with-files/{{.Bucket}}/wood</code>.</p>
+			{{else}}
+				<div class="error">
+					<p>An error occurred trying to access S3! See the logs for more details.<br />As a result, the message generated below will not include any files.</p>
+				</div>
+			{{end}}
+			<form method="POST">
+				<textarea name="message">{{.DefaultMessage}}</textarea>
+				<button type="submit" class="button">Send</a>
+			</form>
 		{{end}}
-		<form method="POST">
-			<textarea name="message">{{.DefaultMessage}}</textarea>
-			<button type="submit" class="button">Send</a>
-		</form>
 	</body>
 </html>
 `
 
 type Page struct {
+	Post           bool
 	Prefix         string
 	DefaultMessage string
 	Bucket         string
 	Result         string
 	ShardID        string
 	SequenceNumber string
+	S3Available    bool
+	MaxKeys        int64
 }
 
 var (
@@ -146,51 +144,53 @@ func renderFormWithFiles(w http.ResponseWriter, r *http.Request, query string) {
 		keyPrefix = strings.Join(parts[1:], "/")
 	}
 
-	log.Printf("Accessing to S3, bucket=%s prefix=%s", bucket, keyPrefix)
+	log.Printf("Accessing to S3, bucket=%s prefix=%s keys=%v", bucket, keyPrefix, *s3MaxKeys)
 	req := &s3.ListObjectsV2Input{
 		Bucket:  aws.String(bucket),
-		MaxKeys: aws.Int64(500),
+		MaxKeys: s3MaxKeys,
 		Prefix:  aws.String(keyPrefix),
 	}
 	resp, err := s3Client.ListObjectsV2(req)
+	var s3Available = true
 	if err != nil {
-		http.Error(w, fmt.Sprintf("Error in S3 client: %s", err), http.StatusInternalServerError)
+		s3Available = false
+		log.Printf("[ERROR] S3 not available! bucket=%s prefix=%s - %s", bucket, keyPrefix, err)
+	}
+
+	m := createMessage()
+	mcr, err := m.MetadataCreateRequest()
+	if err != nil {
+		http.Error(w, "Unexpected error creating message", http.StatusInternalServerError)
 		return
 	}
 
-	message := &Message{
-		Header: Header{
-			ID:    uuid(),
-			Class: "Command",
-			Type:  "MetadataCreate",
-		},
-		Body: Body{
-			Title: "Research about birds in the UK.",
-			UUID:  uuid(),
-		},
+	if s3Available {
+		mcr.ObjectFile = []message.File{}
+		for _, object := range resp.Contents {
+			var checksum string
+			if *checksums {
+				checksum = hasher(s3Client, bucket, *object.Key, *object.ETag)
+			}
+			file := createFile(
+				fmt.Sprintf("%s", message.NewUUID()),
+				fmt.Sprintf("s3://%s/%s", bucket, *object.Key),
+				*object.Key,
+				checksum,
+			)
+			mcr.ObjectFile = append(mcr.ObjectFile, *file)
+		}
 	}
-	for _, object := range resp.Contents {
-		message.Body.Files = append(message.Body.Files, &File{
-			ID:          uuid(),
-			Path:        fmt.Sprintf("s3://%s/%s", bucket, *object.Key),
-			StorageType: 1,
-			Title:       *object.Key,
-		})
-	}
-	msg, err := encodeMessage(message)
+
+	msg, err := encodeMessage(m)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("Error encoding JSON: %s", err), http.StatusInternalServerError)
 		return
 	}
-	renderForm(w, r, string(msg))
-}
-
-func encodeMessage(msg *Message) ([]byte, error) {
-	return json.MarshalIndent(msg, "", "  ")
+	renderForm(w, r, s3Available, string(msg), keyPrefix, bucket)
 }
 
 func submitForm(w http.ResponseWriter, r *http.Request) {
-	p := &Page{Prefix: *prefix, Bucket: *s3DefaultBucket}
+	p := &Page{Post: true}
 	if err := r.ParseForm(); err != nil {
 		p.Result = fmt.Sprintf("The form could not be parsed: %s", err)
 		renderTemplate(w, p)
@@ -221,11 +221,13 @@ func submitForm(w http.ResponseWriter, r *http.Request) {
 	renderTemplate(w, p)
 }
 
-func renderForm(w http.ResponseWriter, r *http.Request, message string) {
+func renderForm(w http.ResponseWriter, r *http.Request, s3Available bool, message, prefix, bucket string) {
 	p := &Page{
-		Prefix:         *prefix,
+		Prefix:         prefix,
 		DefaultMessage: message,
-		Bucket:         *s3DefaultBucket,
+		Bucket:         bucket,
+		S3Available:    s3Available,
+		MaxKeys:        *s3MaxKeys,
 	}
 
 	renderTemplate(w, p)
@@ -264,7 +266,9 @@ var (
 	kinesisStream   *string
 	s3Client        *s3.S3
 	s3DefaultBucket *string
+	s3MaxKeys       *int64
 	prefix          *string
+	checksums       *bool
 )
 
 func main() {
@@ -280,6 +284,8 @@ func main() {
 	prefix = flag.String("prefix", "/", "Path prefix, e.g.: `/msgcreator`, similar to `--prefix` in Jenkins")
 	kinesisStream = flag.String("kinesis-stream", "main", "Kinesis - Stream")
 	s3DefaultBucket = flag.String("s3-default-bucket", "rdss-prod-figshare-0132", "S3 - default bucket")
+	s3MaxKeys = flag.Int64("s3-max-keys", 20, "S3 - Max keys listed - too many can be slow because we're fetching checksums")
+	checksums = flag.Bool("checksums", false, "S3 - calculate checksums")
 	flag.Parse()
 
 	if !strings.HasSuffix(*prefix, "/") {
@@ -334,14 +340,4 @@ func getS3Client(accessKey, secretKey, region, endpoint *string) *s3.S3 {
 	sess := session.Must(session.NewSession(config))
 
 	return s3.New(sess)
-}
-
-func uuid() (uuid string) {
-	b := make([]byte, 16)
-	_, err := rand.Read(b)
-	if err != nil {
-		fmt.Println("Error: ", err)
-		return
-	}
-	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:])
 }
