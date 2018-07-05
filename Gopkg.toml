@@ -1,3 +1,7 @@
 [[constraint]]
   name = "github.com/aws/aws-sdk-go"
   version = "1.8.35"
+
+[[constraint]]
+  name = "github.com/JiscRDSS/rdss-archivematica-channel-adapter"
+  revision = "38e26f43b2e10ea470646b5456842c268300f372" # v0.7.0-rc.1
