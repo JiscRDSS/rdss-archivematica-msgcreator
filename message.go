@@ -139,18 +139,11 @@ func createMessage() *Message {
 }
 
 func createFile(uuid, path, title, checksum string) *File {
-	return &File{
-		FileUUID:       MustUUID(uuid),
-		FileIdentifier: uuid,
-		FileName:       title,
-		FileSize:       1,
-		FileChecksum: []Checksum{
-			Checksum{
-				ChecksumUuid:  NewUUID(),
-				ChecksumType:  ChecksumTypeEnum_md5,
-				ChecksumValue: checksum,
-			},
-		},
+	file := &File{
+		FileUUID:             MustUUID(uuid),
+		FileIdentifier:       uuid,
+		FileName:             title,
+		FileSize:             1,
 		FileCompositionLevel: "string",
 		FileDateModified:     []Timestamp{Timestamp(time.Date(2002, time.October, 2, 10, 0, 0, 0, time.FixedZone("", -18000)))},
 		FileUse:              FileUseEnum_originalFile,
@@ -170,5 +163,29 @@ func createFile(uuid, path, title, checksum string) *File {
 			StoragePlatformType: StorageTypeEnum_S3,
 			StoragePlatformCost: "string",
 		},
+		FileRights: Rights{
+			Access: []Access{
+				Access{AccessType: AccessTypeEnum_open},
+			},
+			Licence: []Licence{
+				Licence{
+					LicenceIdentifier: "string",
+					LicenseStartDate:  Timestamp(time.Date(1984, time.October, 2, 10, 0, 0, 0, time.FixedZone("", -18000))),
+					LicenseEndDate:    Timestamp(time.Date(2125, time.October, 2, 10, 0, 0, 0, time.FixedZone("", -18000))),
+				},
+			},
+		},
+		FileDateCreated:  Timestamp(time.Date(1984, time.October, 2, 10, 0, 0, 0, time.FixedZone("", -18000))),
+		FileLastDownload: Timestamp(time.Date(2012, time.October, 2, 10, 0, 0, 0, time.FixedZone("", -18000))),
 	}
+	if checksum != "" {
+		file.FileChecksum = []Checksum{
+			Checksum{
+				ChecksumUuid:  NewUUID(),
+				ChecksumType:  ChecksumTypeEnum_md5,
+				ChecksumValue: checksum,
+			},
+		}
+	}
+	return file
 }
