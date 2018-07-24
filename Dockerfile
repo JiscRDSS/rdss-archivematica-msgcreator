@@ -1,4 +1,4 @@
-FROM golang:1.8-alpine
+FROM golang:1.10-alpine3.8
 
 ARG APP_PATH=github.com/JiscRDSS/rdss-archivematica-msgcreator
 
